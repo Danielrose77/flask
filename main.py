@@ -270,4 +270,22 @@ def extract_deal_with_openai(messages, deal_id, client_name):
 
 def format_deal_summary(summary):
     """Format the deal summary for Slack"""
-    return f"""📋 *DEAL SUMMARY - Please Verify*
+    lines = [
+        "📋 *DEAL SUMMARY - Please Verify*",
+        "```",
+        f"Deal ID:           {summary.get('deal_id', 'N/A')}",
+        f"Client:            {summary.get('client_name', 'N/A')}",
+        f"Vessel:            {summary.get('vessel', 'N/A')} (IMO: {summary.get('imo', 'N/A')})",
+        f"Port:              {summary.get('port', 'N/A')}",
+        f"ETA:               {summary.get('eta', 'N/A')}",
+        f"Product:           {summary.get('product', 'N/A')}",
+        f"Quantity:          {summary.get('quantity', 'N/A')}",
+        f"Our Price:         ${summary.get('our_price', 'N/A')}",
+        f"Competitor:        {summary.get('competitor', 'N/A')}",
+        f"Competitor Price:  ${summary.get('competitor_price', 'N/A')}",
+        f"Loss Reason:       {summary.get('loss_reason', 'N/A')}",
+        f"Credit Terms:      {summary.get('credit_terms', 'N/A')}",
+        "```",
+        "Reply with ✅ to save to Airtable or ❌ to cancel."
+    ]
+    return "\n".join(lines)
