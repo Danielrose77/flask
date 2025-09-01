@@ -270,5 +270,4 @@ def extract_deal_with_openai(messages, deal_id, client_name):
 
 def format_deal_summary(summary):
     """Format the deal summary for Slack"""
-    return f"""
-📋 *DEAL SUMMARY - Please Verify*
+    return f"""📋 *DEAL SUMMARY - Please Verify*
