@@ -5,6 +5,10 @@ import hmac
 import requests
 import json
 from datetime import datetime
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
@@ -35,6 +39,7 @@ def verify_slack_request(request):
 
 def send_slack_message(channel, text, thread_ts=None):
     """Send a message to Slack"""
+    logging.info(f"Sending message to channel {channel}, thread {thread_ts}")
     url = "https://slack.com/api/chat.postMessage"
     headers = {
         "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
@@ -48,10 +53,12 @@ def send_slack_message(channel, text, thread_ts=None):
         data["thread_ts"] = thread_ts
     
     response = requests.post(url, headers=headers, json=data)
+    logging.info(f"Slack API response: {response.json()}")
     return response.json()
 
 def get_thread_messages(channel, thread_ts):
     """Get all messages in a thread"""
+    logging.info(f"Getting thread messages for {channel}, {thread_ts}")
     url = "https://slack.com/api/conversations.replies"
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
     params = {
@@ -59,6 +66,7 @@ def get_thread_messages(channel, thread_ts):
         "ts": thread_ts
     }
     response = requests.get(url, headers=headers, params=params)
+    logging.info(f"Thread messages response: {response.json()}")
     return response.json()
 
 @app.route('/')
@@ -68,6 +76,7 @@ def index():
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
     slack_event = request.json
+    logging.info(f"Received Slack event: {slack_event}")
     
     # Handle URL verification
     if 'challenge' in slack_event:
@@ -75,17 +84,22 @@ def slack_events():
     
     # Verify request
     if not verify_slack_request(request):
+        logging.warning("Failed to verify Slack request")
         return 'Unauthorized', 403
     
     # Handle events
     if 'event' in slack_event:
         event = slack_event['event']
+        logging.info(f"Event type: {event.get('type')}, Reaction: {event.get('reaction')}")
         
         # Handle reaction added
         if event.get('type') == 'reaction_added' and event.get('reaction') == 'x':
+            logging.info(f"X reaction detected! Full event: {event}")
             channel = event['item']['channel']
             message_ts = event['item']['ts']
             user = event['user']
+            
+            logging.info(f"Channel: {channel}, Message TS: {message_ts}, User: {user}")
             
             # Get the thread messages
             thread_data = get_thread_messages(channel, message_ts)
@@ -100,7 +114,7 @@ def slack_events():
             }
             
             # Ask for Deal ID and Client
-            send_slack_message(
+            response = send_slack_message(
                 channel,
                 "I see you've marked this deal as lost. Please provide:\n" +
                 "• Deal ID (e.g., D-2024-0892)\n" +
@@ -108,10 +122,13 @@ def slack_events():
                 "Format: `D-2024-0892 | Adani Shipping`",
                 message_ts
             )
+            logging.info(f"Message sent response: {response}")
         
         # Handle message replies (looking for Deal ID)
         elif event.get('type') == 'message' and 'thread_ts' in event:
+            logging.info(f"Message in thread detected: {event.get('text')}")
             if 'D-2024' in event.get('text', ''):
+                logging.info("Deal ID found in message, processing...")
                 process_deal_details(event)
     
     return '', 200
@@ -122,6 +139,8 @@ def process_deal_details(event):
     channel = event['channel']
     thread_ts = event['thread_ts']
     user = event['user']
+    
+    logging.info(f"Processing deal details: {text}")
     
     # Parse Deal ID and Client (expecting format: "D-2024-0892 | Adani Shipping")
     parts = text.replace('|', ' ').split()
@@ -135,6 +154,8 @@ def process_deal_details(event):
             client_name.append(part)
     
     client_name = ' '.join(client_name)
+    
+    logging.info(f"Parsed - Deal ID: {deal_id}, Client: {client_name}")
     
     if not deal_id or not client_name:
         send_slack_message(
@@ -152,6 +173,7 @@ def process_deal_details(event):
             break
     
     if not pending_key or pending_key not in pending_deals:
+        logging.warning("Could not find pending deal data")
         send_slack_message(channel, "Sorry, I couldn't find the deal data. Please try again.", thread_ts)
         return
     
@@ -171,6 +193,7 @@ def process_deal_details(event):
 
 def extract_deal_with_openai(messages, deal_id, client_name):
     """Use OpenAI to extract deal information"""
+    logging.info(f"Extracting deal info with OpenAI for {deal_id}")
     
     # Format messages for OpenAI
     conversation = "\n".join([f"{msg.get('user', 'User')}: {msg.get('text', '')}" for msg in messages])
@@ -221,6 +244,7 @@ def extract_deal_with_openai(messages, deal_id, client_name):
     try:
         response = requests.post(url, headers=headers, json=data)
         response_data = response.json()
+        logging.info(f"OpenAI response: {response_data}")
         
         if 'choices' in response_data:
             extracted_text = response_data['choices'][0]['message']['content']
@@ -233,6 +257,7 @@ def extract_deal_with_openai(messages, deal_id, client_name):
             
             return extracted_data
         else:
+            logging.error(f"OpenAI API error: {response_data}")
             # Return default structure if OpenAI fails
             return {
                 'deal_id': deal_id,
@@ -250,7 +275,7 @@ def extract_deal_with_openai(messages, deal_id, client_name):
                 'credit_terms': 'N/A'
             }
     except Exception as e:
-        print(f"OpenAI Error: {str(e)}")
+        logging.error(f"OpenAI Error: {str(e)}")
         # Return default structure if error
         return {
             'deal_id': deal_id,
@@ -289,3 +314,7 @@ def format_deal_summary(summary):
         "Reply with ✅ to save to Airtable or ❌ to cancel."
     ]
     return "\n".join(lines)
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
