@@ -127,7 +127,7 @@ def slack_events():
 # Handle message replies (looking for Deal ID)
 elif event.get('type') == 'message' and 'thread_ts' in event:
     # Ignore bot's own messages
-    if event.get('user') != 'U09D0V21XF0':  # Replace with your bot's user ID
+        if event.get('user') != 'U09D0V21XF0':  # Replace with your bot's user ID
         logging.info(f"Message in thread detected: {event.get('text')}")
         if 'D-2024' in event.get('text', ''):
             logging.info("Deal ID found in message, processing...")
