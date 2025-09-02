@@ -101,16 +101,22 @@ def slack_events():
             
             logging.info(f"Channel: {channel}, Message TS: {message_ts}, User: {user}")
             
+            # Check if we've already processed this reaction
+            pending_key = f"{channel}_{message_ts}_{user}"
+            if pending_key in pending_deals and pending_deals[pending_key].get('reaction_processed'):
+                logging.info(f"Already processed this reaction: {pending_key}")
+                return '', 200
+            
             # Get the thread messages
             thread_data = get_thread_messages(channel, message_ts)
             
             # Store thread data for later
-            pending_key = f"{channel}_{message_ts}_{user}"
             pending_deals[pending_key] = {
                 'channel': channel,
                 'thread_ts': message_ts,
                 'messages': thread_data.get('messages', []),
-                'user': user
+                'user': user,
+                'reaction_processed': True
             }
             
             # Ask for Deal ID and Client
@@ -179,6 +185,11 @@ def process_deal_details(event):
         send_slack_message(channel, "Sorry, I couldn't find the deal data. Please try again.", thread_ts)
         return
     
+    # Check if we've already sent a summary for this deal
+    if pending_deals[pending_key].get('summary_sent'):
+        logging.info("Summary already sent for this deal")
+        return
+    
     thread_messages = pending_deals[pending_key]['messages']
     
     # Extract deal info using OpenAI
@@ -188,7 +199,8 @@ def process_deal_details(event):
     summary_text = format_deal_summary(deal_summary)
     send_slack_message(channel, summary_text, thread_ts)
     
-    # Store the summary for later approval
+    # Mark summary as sent and store the summary for later approval
+    pending_deals[pending_key]['summary_sent'] = True
     pending_deals[pending_key]['summary'] = deal_summary
     pending_deals[pending_key]['deal_id'] = deal_id
     pending_deals[pending_key]['client_name'] = client_name
