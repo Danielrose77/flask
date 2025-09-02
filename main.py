@@ -229,20 +229,28 @@ def extract_deal_with_openai(messages, deal_id, client_name):
     - Deal ID: {deal_id}
     - Client: {client_name}
     
-    Extract and return as JSON:
-    - vessel (vessel name)
-    - imo (IMO number)
-    - port
-    - eta (arrival dates)
-    - product (VLSFO/LSMGO/MGO etc - if multiple products, list them as a simple comma-separated string)
-    - quantity (in MT - if multiple quantities, combine them)
-    - our_price (our quoted price if mentioned, just the number)
-    - competitor (competitor name)
-    - competitor_price (competitor's price, just the number)
-    - loss_reason (Price/Credit/Compliance - infer from context)
-    - credit_terms (payment terms mentioned)
+    Extract and return as JSON following these IMPORTANT RULES:
     
-    If a field is not found, use "N/A".
+    1. vessel (vessel name)
+    2. imo (IMO number)
+    3. port
+    4. eta (arrival dates)
+    5. product (VLSFO/LSMGO/MGO etc - if multiple products, list them as a simple comma-separated string)
+    6. quantity (in MT - if multiple quantities, combine them)
+    7. our_price (our quoted price if mentioned, just the number)
+    8. competitor (NOTE: The offers in the thread are from SUPPLIERS not competitors. Look for mentions of actual competitors like "7seas", "Minerva", "NBCO", etc. who won the deal)
+    9. competitor_price (the price from the actual competitor who won, not supplier offers)
+    10. loss_reason (If no specific reason is given, default to "Price". Other reasons might be "Credit" or "Compliance")
+    11. credit_terms (DEFAULT to "30 days" unless specifically stated otherwise. Look for terms like "CIA" (cash in advance), "45 days", "60 days", "45 ddd", "60 ddd" etc.)
+    
+    IMPORTANT BUSINESS LOGIC:
+    - Credit terms: If not mentioned, use "30 days" as default
+    - "ddd" means "days" in credit terms
+    - Loss reason: If not explicitly stated, assume "Price"
+    - Competitors are companies we lost the deal to (like 7seas, Minerva, NBCO), NOT suppliers offering us prices
+    - CIA means "Cash in Advance"
+    
+    If a field is not found, use "N/A" except for credit_terms (use "30 days") and loss_reason (use "Price").
     For the product field, return a simple string, not an array or object.
     Return only valid JSON, no additional text.
     """
@@ -250,7 +258,7 @@ def extract_deal_with_openai(messages, deal_id, client_name):
     data = {
         "model": "gpt-4",
         "messages": [
-            {"role": "system", "content": "You are a data extraction specialist for marine fuel trading deals."},
+            {"role": "system", "content": "You are a data extraction specialist for marine fuel trading deals. You understand marine fuel trading terminology and business practices."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.1
@@ -297,6 +305,13 @@ def extract_deal_with_openai(messages, deal_id, client_name):
                 elif not isinstance(quantity, str):
                     extracted_data['quantity'] = str(quantity)
             
+            # Apply business logic defaults
+            if extracted_data.get('credit_terms') == 'N/A' or not extracted_data.get('credit_terms'):
+                extracted_data['credit_terms'] = '30 days'
+            
+            if extracted_data.get('loss_reason') == 'N/A' or not extracted_data.get('loss_reason'):
+                extracted_data['loss_reason'] = 'Price'
+            
             # Add the known details
             extracted_data['deal_id'] = deal_id
             extracted_data['client_name'] = client_name
@@ -317,8 +332,8 @@ def extract_deal_with_openai(messages, deal_id, client_name):
                 'our_price': 'N/A',
                 'competitor': 'N/A',
                 'competitor_price': 'N/A',
-                'loss_reason': 'N/A',
-                'credit_terms': 'N/A'
+                'loss_reason': 'Price',  # Default to Price
+                'credit_terms': '30 days'  # Default to 30 days
             }
     except Exception as e:
         logging.error(f"OpenAI Error: {str(e)}")
@@ -335,8 +350,8 @@ def extract_deal_with_openai(messages, deal_id, client_name):
             'our_price': 'N/A',
             'competitor': 'N/A',
             'competitor_price': 'N/A',
-            'loss_reason': 'N/A',
-            'credit_terms': 'N/A'
+            'loss_reason': 'Price',  # Default to Price
+            'credit_terms': '30 days'  # Default to 30 days
         }
 
 def format_deal_summary(summary):
