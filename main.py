@@ -222,8 +222,8 @@ def extract_deal_with_openai(messages, deal_id, client_name):
     - imo (IMO number)
     - port
     - eta (arrival dates)
-    - product (VLSFO/LSMGO/MGO etc)
-    - quantity (in MT)
+    - product (VLSFO/LSMGO/MGO etc - if multiple products, list them as a simple comma-separated string)
+    - quantity (in MT - if multiple quantities, combine them)
     - our_price (our quoted price if mentioned, just the number)
     - competitor (competitor name)
     - competitor_price (competitor's price, just the number)
@@ -231,6 +231,7 @@ def extract_deal_with_openai(messages, deal_id, client_name):
     - credit_terms (payment terms mentioned)
     
     If a field is not found, use "N/A".
+    For the product field, return a simple string, not an array or object.
     Return only valid JSON, no additional text.
     """
     
@@ -252,6 +253,37 @@ def extract_deal_with_openai(messages, deal_id, client_name):
             extracted_text = response_data['choices'][0]['message']['content']
             # Parse the JSON response
             extracted_data = json.loads(extracted_text)
+            
+            # Fix product field if it's a list or dict
+            if 'product' in extracted_data:
+                product = extracted_data['product']
+                if isinstance(product, list):
+                    # Join list items into a string
+                    extracted_data['product'] = ', '.join([str(p) for p in product])
+                elif isinstance(product, dict):
+                    # Extract product types and quantities
+                    products = []
+                    if 'type' in product:
+                        products.append(str(product['type']))
+                    else:
+                        for key, value in product.items():
+                            products.append(f"{key}: {value}")
+                    extracted_data['product'] = ', '.join(products) if products else str(product)
+                elif not isinstance(product, str):
+                    extracted_data['product'] = str(product)
+            
+            # Clean up quantity field if needed
+            if 'quantity' in extracted_data:
+                quantity = extracted_data['quantity']
+                if isinstance(quantity, list):
+                    extracted_data['quantity'] = ', '.join([str(q) for q in quantity])
+                elif isinstance(quantity, dict):
+                    quantities = []
+                    for key, value in quantity.items():
+                        quantities.append(f"{value}")
+                    extracted_data['quantity'] = ', '.join(quantities)
+                elif not isinstance(quantity, str):
+                    extracted_data['quantity'] = str(quantity)
             
             # Add the known details
             extracted_data['deal_id'] = deal_id
