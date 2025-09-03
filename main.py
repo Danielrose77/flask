@@ -16,6 +16,8 @@ app = Flask(__name__)
 SLACK_BOT_TOKEN = os.environ.get('SLACK_BOT_TOKEN', '')
 SLACK_SIGNING_SECRET = os.environ.get('SLACK_SIGNING_SECRET', '')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+AIRTABLE_API_KEY = os.environ.get('AIRTABLE_API_KEY', '')
+AIRTABLE_BASE_ID = os.environ.get('AIRTABLE_BASE_ID', 'app1c51qhCjqxsebs')
 
 # Store pending deals (in production, use a database)
 pending_deals = {}
@@ -135,9 +137,17 @@ def slack_events():
             # Skip if message is from a bot
             if 'bot_id' not in event and 'subtype' not in event:
                 logging.info(f"Message in thread detected: {event.get('text')}")
-                if 'D-2024' in event.get('text', ''):
+                text = event.get('text', '')
+                
+                # Check for Deal ID
+                if 'D-2024' in text:
                     logging.info("Deal ID found in message, processing...")
                     process_deal_details(event)
+                
+                # Check for approval confirmation (checkmark emoji)
+                elif '✅' in text:
+                    logging.info("Approval detected, saving to Airtable...")
+                    save_to_airtable(event)
     
     return '', 200
 
@@ -204,6 +214,160 @@ def process_deal_details(event):
     pending_deals[pending_key]['summary'] = deal_summary
     pending_deals[pending_key]['deal_id'] = deal_id
     pending_deals[pending_key]['client_name'] = client_name
+
+def save_to_airtable(event):
+    """Save the deal to Airtable when user confirms with checkmark"""
+    channel = event['channel']
+    thread_ts = event['thread_ts']
+    user = event['user']
+    
+    # Find the pending deal with summary
+    pending_key = None
+    for key in pending_deals:
+        if channel in key and thread_ts in key and 'summary' in pending_deals[key]:
+            pending_key = key
+            break
+    
+    if not pending_key:
+        logging.warning("No pending deal summary found for Airtable save")
+        send_slack_message(channel, "No deal summary found to save.", thread_ts)
+        return
+    
+    deal_data = pending_deals[pending_key]['summary']
+    
+    # Create Airtable records
+    success = create_airtable_records(deal_data)
+    
+    if success:
+        send_slack_message(channel, "✅ Deal successfully saved to Airtable!", thread_ts)
+        # Clear the pending deal
+        del pending_deals[pending_key]
+    else:
+        send_slack_message(channel, "❌ Error saving to Airtable. Please check the logs.", thread_ts)
+
+def create_airtable_records(deal_data):
+    """Create records in Airtable following Gareth's structure"""
+    if not AIRTABLE_API_KEY:
+        logging.error("Airtable API key not configured")
+        return False
+    
+    headers = {
+        'Authorization': f'Bearer {AIRTABLE_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # Extract deal number from Deal ID (D-2024-0892 -> 892)
+        deal_number = int(deal_data['deal_id'].split('-')[-1])
+        
+        # Parse credit terms to number (30 days -> 30)
+        credit_days = 30  # default
+        if deal_data.get('credit_terms'):
+            if 'CIA' in deal_data['credit_terms'].upper():
+                credit_days = 0
+            else:
+                # Extract number from string like "30 days" or "45 ddd"
+                import re
+                numbers = re.findall(r'\d+', deal_data['credit_terms'])
+                if numbers:
+                    credit_days = int(numbers[0])
+        
+        # Parse quantities and prices
+        try:
+            total_qty = float(deal_data.get('quantity', '50').replace('MT', '').replace(',', '').strip().split('-')[0])
+        except:
+            total_qty = 50
+        
+        try:
+            competitor_price = float(deal_data.get('competitor_price', '0').replace('$', '').replace(',', '').split('/')[0])
+        except:
+            competitor_price = 0
+        
+        # Step 1: Create the Offer
+        offer_data = {
+            "records": [{
+                "fields": {
+                    "OfferID": deal_data['deal_id'],
+                    "Created Record": datetime.now().strftime("%Y-%m-%d"),
+                    "auto": deal_number,
+                    "Payment terms": [credit_days],
+                    "today": datetime.now().strftime("%Y-%m-%d"),
+                    "Currency": ["$ USD"],
+                    "Total MT": total_qty,
+                    "Real Total Client": competitor_price * total_qty,
+                    "Real Total Shipergy": competitor_price * total_qty,
+                    "Profit Margin $": 0,
+                    "Qty Average": total_qty,
+                    "Enquiry Status": ["Dismissed Enquiry / Lost"],
+                    "Invoice Date": [datetime.now().strftime("%Y-%m-%d")],
+                    "Estimated MAX Total Client": competitor_price * total_qty,
+                    "Estimated MAX Total Shipergy": competitor_price * total_qty,
+                    "Estimated Avg Total Client": competitor_price * total_qty,
+                    "Estimated AVG Total Shipergy copy": competitor_price * total_qty,
+                    "Estimated Profit Margin $": 0,
+                    "Total Qty (For stage purposes)": total_qty,
+                    "linkURL": "",
+                    "Seller=PS": ["Yes"],
+                    "Product Families": [deal_data.get('product', 'VLSFO').split(',')[0].strip()],
+                    "Type of Products": ["Main Product"],
+                    "VAT": 0,
+                    "TOTAL CLIENT WITH VAT": competitor_price * total_qty,
+                    "Loss Reason": deal_data.get('loss_reason', 'Price'),
+                    "Competitor": deal_data.get('competitor', 'N/A')
+                }
+            }]
+        }
+        
+        offer_url = f'https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/Offers'
+        offer_response = requests.post(offer_url, headers=headers, data=json.dumps(offer_data))
+        offer_result = offer_response.json()
+        
+        if 'error' in offer_result:
+            logging.error(f"Error creating Offer: {offer_result}")
+            return False
+        
+        offer_record_id = offer_result['records'][0]['id']
+        logging.info(f"Offer created: {offer_record_id}")
+        
+        # Step 2: Create the Enquiry
+        enquiry_data = {
+            "records": [{
+                "fields": {
+                    "Status": "Dismissed Enquiry / Lost",
+                    "Enquiry Date": datetime.now().isoformat() + "Z",
+                    "Vessel": deal_data.get('vessel', 'Unknown Vessel'),
+                    "Port": deal_data.get('port', 'Unknown Port'),
+                    "Client Payment Terms": credit_days,
+                    "OfferID": [offer_record_id],
+                    "Date Range From": datetime.now().strftime("%Y-%m-%d"),
+                    "Date Range To": datetime.now().strftime("%Y-%m-%d"),
+                    "Currency": "$ USD",
+                    "Eligible For Borrowing": "No",
+                    "Invoice Date": datetime.now().strftime("%Y-%m-%d"),
+                    "CIA Deal": "Yes" if credit_days == 0 else "No",
+                    "Record Type": "Bunkers",
+                    "IMO": deal_data.get('imo', 'N/A'),
+                    "ETA": deal_data.get('eta', 'N/A')
+                }
+            }]
+        }
+        
+        enquiry_url = f'https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/Enquiries'
+        enquiry_response = requests.post(enquiry_url, headers=headers, data=json.dumps(enquiry_data))
+        enquiry_result = enquiry_response.json()
+        
+        if 'error' in enquiry_result:
+            logging.error(f"Error creating Enquiry: {enquiry_result}")
+            return False
+        
+        enquiry_record_id = enquiry_result['records'][0]['id']
+        logging.info(f"Enquiry created: {enquiry_record_id}")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error creating Airtable records: {str(e)}")
+        return False
 
 def extract_deal_with_openai(messages, deal_id, client_name):
     """Use OpenAI to extract deal information"""
@@ -278,10 +442,8 @@ def extract_deal_with_openai(messages, deal_id, client_name):
             if 'product' in extracted_data:
                 product = extracted_data['product']
                 if isinstance(product, list):
-                    # Join list items into a string
                     extracted_data['product'] = ', '.join([str(p) for p in product])
                 elif isinstance(product, dict):
-                    # Extract product types and quantities
                     products = []
                     if 'type' in product:
                         products.append(str(product['type']))
@@ -332,12 +494,11 @@ def extract_deal_with_openai(messages, deal_id, client_name):
                 'our_price': 'N/A',
                 'competitor': 'N/A',
                 'competitor_price': 'N/A',
-                'loss_reason': 'Price',  # Default to Price
-                'credit_terms': '30 days'  # Default to 30 days
+                'loss_reason': 'Price',
+                'credit_terms': '30 days'
             }
     except Exception as e:
         logging.error(f"OpenAI Error: {str(e)}")
-        # Return default structure if error
         return {
             'deal_id': deal_id,
             'client_name': client_name,
@@ -350,8 +511,8 @@ def extract_deal_with_openai(messages, deal_id, client_name):
             'our_price': 'N/A',
             'competitor': 'N/A',
             'competitor_price': 'N/A',
-            'loss_reason': 'Price',  # Default to Price
-            'credit_terms': '30 days'  # Default to 30 days
+            'loss_reason': 'Price',
+            'credit_terms': '30 days'
         }
 
 def format_deal_summary(summary):
